@@ -1,9 +1,9 @@
 # Author(s) Calvin Feng, 2018
 import numpy as np
-import time
 from random import uniform
 from numpy import dot, tanh, exp
-from pdb import set_trace
+from adagrad import AdaGradOptimizer
+from data_util import *
 
 
 class VanillaRNNModel(object):
@@ -134,44 +134,13 @@ class VanillaRNNModel(object):
                                                                                                    rel_error)
 
 
-def load_dictionary(filepath):
-    with open(filepath, 'r') as file:
-        text_data = file.read()
-        chars = list(set(text_data))
-        num_chars, num_unique_chars = len(text_data), len(chars)
-
-        # Create a mapping from character to idx
-        char_to_idx = dict()
-        for i, ch in enumerate(chars):
-            char_to_idx[ch] = i
-
-        # Create a mapping from idx to character
-        idx_to_char = dict()
-        for i, ch in enumerate(chars):
-            idx_to_char[i] = ch
-
-        print "text document contains %d characters and has %d unique characters" % (num_chars, num_unique_chars)
-        return text_data, char_to_idx, idx_to_char
-
-
-def adagrad_optimize(model, grads, mem, learning_rate=1e-1):
-    for name in model.params:
-        mem[name] += grads[name] * grads[name]
-        model.params[name] += -1* (learning_rate * grads[name] / np.sqrt(mem[name] + 1e-8))
-
-
 def main():
     hidden_size = 100
     seq_length = 20
     learning_rate = 1e-1
     text_data, char_to_idx, idx_to_char = load_dictionary("datasets/word_dictionary.txt")
     model = VanillaRNNModel(len(char_to_idx), hidden_size)
-
-    # Create memory variables for Adagrad
-    mem = dict()
-    for name in model.params:
-        mem[name] = np.zeros_like(model.params[name])
-
+    optimizer = AdaGradOptimizer(model, learning_rate)
     step, pointer, epoch_size, smooth_loss = 0, 0, 100, -np.log(1.0/len(char_to_idx))*seq_length
 
     while True:
@@ -197,7 +166,7 @@ def main():
         if step % epoch_size == 0:
             print "iter. step %d, loss: %f" % (step, smooth_loss)
 
-        adagrad_optimize(model, grads, mem, learning_rate)
+        optimizer.update_param(grads)
 
         step += 1
         pointer += seq_length
