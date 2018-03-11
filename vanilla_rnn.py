@@ -1,6 +1,7 @@
 # Author(s) Calvin Feng, 2018
 import numpy as np
 import time
+from random import uniform
 from numpy import dot, tanh, exp
 from pdb import set_trace
 
@@ -14,11 +15,13 @@ class VanillaRNNModel(object):
     def __init__(self, input_dim, hidden_dim):
         self.input_dim, self.output_dim = input_dim, input_dim
         self.hidden_dim = hidden_dim
-        self.Wxh = np.random.randn(self.hidden_dim, self.input_dim) * 0.01
-        self.Whh = np.random.randn(self.hidden_dim, self.hidden_dim) * 0.01
-        self.Why = np.random.randn(self.output_dim, self.hidden_dim) * 0.01
-        self.Bh = np.zeros((self.hidden_dim, 1))  # hidden bias
-        self.By = np.zeros((self.output_dim, 1))  # output bias
+        self.params = {
+            'Wxh': np.random.randn(self.hidden_dim, self.input_dim) * 0.01,
+            'Whh': np.random.randn(self.hidden_dim, self.hidden_dim) * 0.01,
+            'Why': np.random.randn(self.output_dim, self.hidden_dim) * 0.01,
+            'Bh': np.zeros((self.hidden_dim, 1)),
+            'By': np.zeros((self.output_dim, 1))
+        }
 
     def sample_chars(self, hidden_state, seed_idx, num_seq):
         """Sample a sequence of characters from the current model, this is primarily used for test time"""
@@ -26,8 +29,8 @@ class VanillaRNNModel(object):
         x[seed_idx] = 1
         indices = []
         for t in xrange(num_seq):
-            hidden = tanh(dot(self.Wxh, x) + dot(self.Whh, hidden_state) + self.Bh)
-            output = dot(self.Why, hidden) + self.By
+            hidden = tanh(dot(self.params['Wxh'], x) + dot(self.params['Whh'], hidden_state) + self.params['Bh'])
+            output = dot(self.params['Why'], hidden) + self.params['By']
             prob = exp(output) / np.sum(exp(output))
             idx = np.random.choice(range(self.input_dim), p=prob.ravel())  # ravel() flattens the matrix
             x = np.zeros((self.input_dim, 1))
@@ -56,10 +59,12 @@ class VanillaRNNModel(object):
             input_states[t][input_list[t]] = 1
 
             # Compute hidden state
-            hidden_states[t] = tanh(dot(self.Wxh, input_states[t]) + dot(self.Whh, hidden_states[t-1]) + self.Bh)
+            hidden_states[t] = tanh(dot(self.params['Wxh'], input_states[t]) +
+                                    dot(self.params['Whh'], hidden_states[t-1]) +
+                                    self.params['Bh'])
 
             # Compute output state a.k.a. unnomralized log probability using current hidden state
-            output_states[t] = dot(self.Why, hidden_states[t]) + self.By
+            output_states[t] = dot(self.params['Why'], hidden_states[t]) + self.params['By']
 
             # Compute softmax probability state using the output state
             prob_states[t] = exp(output_states[t]) / np.sum(exp(output_states[t]))
@@ -68,8 +73,10 @@ class VanillaRNNModel(object):
 
         # Perform back propagation
         grad_prev_h = np.zeros((self.hidden_dim, 1))
-        grad_Wxh, grad_Whh, grad_Why = np.zeros_like(self.Wxh), np.zeros_like(self.Whh), np.zeros_like(self.Why)
-        grad_Bh, grad_By = np.zeros_like(self.Bh), np.zeros_like(self.By)
+        grad_Wxh = np.zeros_like(self.params['Wxh'])
+        grad_Whh = np.zeros_like(self.params['Whh'])
+        grad_Why = np.zeros_like(self.params['Why'])
+        grad_Bh, grad_By = np.zeros_like(self.params['Bh']), np.zeros_like(self.params['By'])
 
         for t in reversed(xrange(len(input_list))):
             # Compute softmax gradient
@@ -81,7 +88,7 @@ class VanillaRNNModel(object):
             grad_By += grad_output  # (O, 1) + (O, 1)
 
             # Compute gradient of next hidden state, which is the output of the tanh non-linearity
-            grad_h = dot(self.Why.T, grad_output) + grad_prev_h  # (H, O)(O, H) => (H, H)
+            grad_h = dot(self.params['Why'].T, grad_output) + grad_prev_h  # (H, O)(O, H) => (H, H)
 
             # Take derivative of tanh, using u-substitutions, in this case, u = dot(Whh, h[t-1]) + dot(Wxh, x[t]) + Bh
             grad_u = (1 - hidden_states[t] * hidden_states[t]) * grad_h
@@ -93,13 +100,41 @@ class VanillaRNNModel(object):
 
             # Finally, compute grad_prev_h, i.e. gradient of loss with respect to h[t - 1], because we need this for the
             # t - 1 step just like what we did at line 86.
-            grad_prev_h = dot(self.Whh.T, grad_u)
+            grad_prev_h = dot(self.params['Whh'].T, grad_u)
 
         for grad_param in [grad_Wxh, grad_Whh, grad_Why, grad_By, grad_Bh]:
             np.clip(grad_param, -5, -5, out=grad_param)  # Clip to mitigate exploding gradients
 
         return loss, grad_Wxh, grad_Whh, grad_Why, grad_By, grad_Bh, hidden_states[len(input_list) - 1]
 
+    def gradient_check(self, input_list, target_list, prev_hidden_state):
+        num_checks, delta = 10, 1e-5
+        grads = dict()
+        _, grads['Wxh'], grads['Whh'], grads['Why'], grads['By'], grads['Bh'], _ = self.loss(input_list,
+                                                                                             target_list,
+                                                                                             prev_hidden_state)
+        for name in grads:
+            if grads[name].shape != self.params[name].shape:
+                raise "matrix dimensions don't match: %s and %s" % (grads[name].shape, self.params[name].shape)
+
+            print name
+            for i in xrange(num_checks):
+                rand_idx = int(uniform(0, self.params[name].size))
+
+                old_val = self.params[name].flat[rand_idx]  # flatten the matrix and use integer index to retrieve value
+
+                self.params[name].flat[rand_idx] = old_val + delta
+                fxpd, _, _, _, _, _, _ = self.loss(input_list, target_list, prev_hidden_state)
+
+                self.params[name].flat[rand_idx] = old_val - delta
+                fxmd, _, _, _, _, _, _ = self.loss(input_list, target_list, prev_hidden_state)
+
+                analytical_grad = grads[name].flat[rand_idx]
+                numerical_grad = (fxpd - fxmd) / (2 * delta)
+                rel_error = abs(analytical_grad - numerical_grad) / abs(analytical_grad + numerical_grad)
+                print "analytical gradient value: %f, numerical gradient value: %f error => %e" % (analytical_grad,
+                                                                                                   numerical_grad,
+                                                                                                   rel_error)
 
 def load_dictionary(filepath):
     with open(filepath, 'r') as file:
@@ -122,10 +157,9 @@ def load_dictionary(filepath):
 
 
 def adagrad_optimize(model, grads, mem, learning_rate=1e-1):
-    for param in mem:
-        mem[param] += grads[param] * grads[param]
-        updated_param = getattr(model, param) - (learning_rate * grads[param] / np.sqrt(mem[param] + 1e-8))
-        setattr(model, param, updated_param)
+    for name in model.params:
+        mem[name] += grads[name] * grads[name]
+        model.params[name] += -1* (learning_rate * grads[name] / np.sqrt(mem[name] + 1e-8))
 
 
 def main():
@@ -136,16 +170,13 @@ def main():
     model = VanillaRNNModel(len(char_to_idx), hidden_size)
 
     # Create memory variables for Adagrad
-    mem = {
-        "Wxh": np.zeros_like(model.Wxh),
-        "Whh": np.zeros_like(model.Whh),
-        "Why": np.zeros_like(model.Why),
-        "Bh": np.zeros_like(model.Bh),
-        "By": np.zeros_like(model.By)
-    }
+    mem = dict()
+    for name in model.params:
+        mem[name] = np.zeros_like(model.params[name])
 
     step, pointer, epoch_size, grads, smooth_loss = 0, 0, 100, dict(), -np.log(1.0/len(char_to_idx))*seq_length
-    while True:
+
+    while step < 1:
         if step == 0 or pointer + seq_length + 1 >= len(text_data):
             prev_hidden_state = np.zeros((hidden_size, 1))  # Reset RNN memory
             pointer = 0  # Reset the pointer
@@ -153,6 +184,8 @@ def main():
         # Since we are trying to predict next letter in the sequence, the target is simply pointer + 1
         input_list = [char_to_idx[ch] for ch in text_data[pointer:pointer+seq_length]]
         target_list = [char_to_idx[ch] for ch in text_data[pointer+1: pointer+seq_length+1]]
+
+        model.gradient_check(input_list, target_list, prev_hidden_state)
 
         if step % epoch_size == 0:
             sampled_indices = model.sample_chars(prev_hidden_state, input_list[0], 200)
