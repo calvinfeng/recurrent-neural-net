@@ -99,7 +99,7 @@ class VanillaRNNModel(object):
             grads['Whh'] += dot(grad_u, hidden_states[t-1].T)
 
             # Finally, compute grad_prev_h, i.e. gradient of loss with respect to h[t - 1], because we need this for the
-            # t - 1 step just like what we did at line 86.
+            # t - 1 step just like what we did at line 91.
             grad_prev_h = dot(self.params['Whh'].T, grad_u)
 
         for name in grads:
