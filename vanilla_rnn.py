@@ -2,6 +2,7 @@
 import numpy as np
 import time
 from numpy import dot, tanh, exp
+from pdb import set_trace
 
 
 class VanillaRNNModel(object):
@@ -35,7 +36,7 @@ class VanillaRNNModel(object):
 
         return indices
 
-    def loss(self, input_list, target_list):
+    def loss(self, input_list, target_list, prev_hidden_state):
         """
         Usage:
         Given vocabs = ['a', 'b', 'c', 'd'], if input sequence was 'dad', then the input list is interpretered as
@@ -44,11 +45,8 @@ class VanillaRNNModel(object):
         :param []int input_list: List of integers that represent indices of the characters from an input sequence
         :param []int target_list: List of integers that represent indices of the characters from a target sequence
         """
-        if self.hidden_state is None:
-            self.hidden_state = np.zeros((self.hidden_dim, 1))
-
         input_states, hidden_states, output_states, prob_states = {}, {}, {}, {}
-        hidden_states[-1] = np.copy(self.hidden_state)
+        hidden_states[-1] = np.copy(prev_hidden_state)
 
         # Perform forward pass
         loss = 0
@@ -66,11 +64,11 @@ class VanillaRNNModel(object):
             # Compute softmax probability state using the output state
             prob_states[t] = exp(output_states[t]) / np.sum(exp(output_states[t]))
 
-            loss += -np.log(prob_states[t][targets[t], 0])  # Remember that prob is an (O, 1) vector.
+            loss += -np.log(prob_states[t][target_list[t], 0])  # Remember that prob is an (O, 1) vector.
 
         # Perform back propagation
         grad_prev_h = np.zeros((self.hidden_dim, 1))
-        grad_Wxh, grad_Whh, grad_Why = np.zeros_like(self.Wxh), np.zeros_like(self.Whh), np.zeros_like(Why)
+        grad_Wxh, grad_Whh, grad_Why = np.zeros_like(self.Wxh), np.zeros_like(self.Whh), np.zeros_like(self.Why)
         grad_Bh, grad_By = np.zeros_like(self.Bh), np.zeros_like(self.By)
 
         for t in reversed(xrange(len(input_list))):
@@ -105,9 +103,9 @@ class VanillaRNNModel(object):
 
 def load_dictionary(filepath):
     with open(filepath, 'r') as file:
-        data = file.read()
-        chars = list(set(data))
-        num_chars, num_unique_chars = len(data), len(chars)
+        text_data = file.read()
+        chars = list(set(text_data))
+        num_chars, num_unique_chars = len(text_data), len(chars)
 
         # Create a mapping from character to idx
         char_to_idx = dict()
@@ -119,28 +117,60 @@ def load_dictionary(filepath):
         for i, ch in enumerate(chars):
             idx_to_char[i] = ch
 
-        print "data contain %d unique characters from %d characters" % (num_unique_chars, num_chars)
-        return char_to_idx, idx_to_char
+        print "text document contains %d characters and has %d unique characters" % (num_chars, num_unique_chars)
+        return text_data, char_to_idx, idx_to_char
 
-def adagrad_optimizer(model):
-    step, data_pointer = 0, 0
-    mem_Wxh, mem_Whh, mem_Why = np.zeros_like(model.Wxh), np.zeros_like(model.Whh), np.zeros_like(model.Why)
-    mem_Bh, mem_By = np.zeros_like(model.Bh), np.zeros_like(model.By)
+
+def adagrad_optimize(model, grads, mem, learning_rate=1e-1):
+    for param in mem:
+        mem[param] += grads[param] * grads[param]
+        updated_param = getattr(model, param) - (learning_rate * grads[param] / np.sqrt(mem[param] + 1e-8))
+        setattr(model, param, updated_param)
 
 
 def main():
     hidden_size = 100
-    seq_length = 25
-    learning_rate = 1e-1
-
-    char_to_idx, idx_to_char = load_dictionary("datasets/word_dictionary.txt")
+    seq_length = 50
+    learning_rate = 1e-3
+    text_data, char_to_idx, idx_to_char = load_dictionary("datasets/word_dictionary.txt")
     model = VanillaRNNModel(len(char_to_idx), hidden_size)
-    init_hidden = np.zeros((hidden_size, 1))
+
+    # Create memory variables for Adagrad
+    mem = {
+        "Wxh": np.zeros_like(model.Wxh),
+        "Whh": np.zeros_like(model.Whh),
+        "Why": np.zeros_like(model.Why),
+        "Bh": np.zeros_like(model.Bh),
+        "By": np.zeros_like(model.By)
+    }
+
+    step, pointer, epoch_size, grads, smooth_loss = 0, 0, 100, dict(), -np.log(1.0/len(char_to_idx))*seq_length
     while True:
-        time.sleep(0.25)
-        indices = model.sample_chars(init_hidden, char_to_idx['a'], 20)
-        txt = ''.join(idx_to_char[idx] for idx in indices)
-        print "-------------\n%s\n-------------" % txt
+        if step == 0 or pointer + seq_length + 1 >= len(text_data):
+            prev_hidden_state = np.zeros((hidden_size, 1))  # Reset RNN memory
+            pointer = 0  # Reset the pointer
+
+        # Since we are trying to predict next letter in the sequence, the target is simply pointer + 1
+        input_list = [char_to_idx[ch] for ch in text_data[pointer:pointer+seq_length]]
+        target_list = [char_to_idx[ch] for ch in text_data[pointer+1: pointer+seq_length+1]]
+
+        if step % epoch_size == 0:
+            sampled_indices = model.sample_chars(prev_hidden_state, input_list[0], 200)
+            predicted_text = ''.join(idx_to_char[idx] for idx in sampled_indices)
+            print "-------------\n%s\n-------------" % predicted_text
+
+        # Forward Prop
+        loss, grads['Wxh'], grads['Whh'], grads['Why'], grads['By'], grads['Bh'], prev_hidden_state = model.loss(input_list,
+                                                                                                            target_list,
+                                                                                                            prev_hidden_state)
+        smooth_loss = smooth_loss * 0.999 + loss * 0.001
+        if step % epoch_size == 0:
+            print "iter. step %d, loss: %f" % (step, smooth_loss)
+
+        adagrad_optimize(model, grads, mem, learning_rate)
+
+        step += 1
+        pointer += seq_length
 
 
 if __name__ == '__main__':
